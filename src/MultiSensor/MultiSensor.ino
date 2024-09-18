@@ -35,12 +35,14 @@
 #include <ArduinoJson.h>
 #include <util/atomic.h>
 
+//#include "MemoryFree.h"
+
 // Feature configuration (coment out unneeded features)
 #define HAS_FLOW_SENSOR   // Water flow sensro YF-B5 (5v)
 #define HAS_DS18B20       // Temperature
 #define HAS_NB_RELAYS 4   // Number of relays (1-4), comment out to disable relays
-//#define HAS_SENSOR_A      // AJ-SR04M
-//#define HAS_SENSOR_B      // AJ-SR04M
+#define HAS_SENSOR_A      // AJ-SR04M
+#define HAS_SENSOR_B      // AJ-SR04M
 
 // GPIO configuration
 #define GPIO_ONEWIRE 12     // OneWire pin bus
@@ -53,18 +55,19 @@
 #define GPIO_RELAY1 11
 #define GPIO_RELAY2 10
 #define GPIO_RELAY3 9
+#define DEFAULT_FREQUENCY_MS 30000 // Frequency of the execution in ms
 
-#define DEFAULT_FREQUENCY_MS 1000 // Frequency of the execution in ms
-#define ONEWIRE_ADDR_LEN 16       // 6 bytes + 3 chars header + EOS = 16 chars
-#define BUF_SIZE 256              // Used for string buffers
+#define ONEWIRE_ADDR_LEN 16        // 6 bytes + 3 chars header + EOS = 16 chars
+#define BUF_SIZE 256               // Used for string buffers
 
 // Debug macro
-#define DBG(...) if(debug) { snprintf(buffer, BUF_SIZE, __VA_ARGS__); Serial.println(buffer); }
+#define DBG(...) if(debug) { snprintf_P(buffer, BUF_SIZE, __VA_ARGS__); Serial.println(buffer); }
 
 unsigned long lastrun_ms = 0;
 unsigned long frequency_ms = DEFAULT_FREQUENCY_MS;
 bool relays_active[] = {false, false, false, false};
-int relays_gpio[] = { GPIO_RELAY0, GPIO_RELAY2, GPIO_RELAY2, GPIO_RELAY3 };
+uint8_t relays_gpio[] = { GPIO_RELAY0, GPIO_RELAY1, GPIO_RELAY2, GPIO_RELAY3 };
+char* relays_label[] = { "relay0", "relay1", "relay2", "relay3" };
 bool debug = false;
 volatile unsigned long pulse_count = 0;  // Counter for flow sensor interruptions
 SoftwareSerial serial_A(GPIO_SENSOR_A_RX, GPIO_SENSOR_A_TX);  // Serial interface to ultrasonic sensor AJ-SR04M
@@ -73,7 +76,6 @@ OneWire oneWire(GPIO_ONEWIRE);
 DallasTemperature sensors(&oneWire);
 char buffer[BUF_SIZE];            // Global char* to avoir multiple String concatenation which causes RAM fragmentation
 
-StaticJsonDocument<200> json_output;
 StaticJsonDocument<200> json_input;
 
 struct ST_CALIBRATION {
@@ -99,15 +101,15 @@ ST_CALIBRATION calibration[] = {
   { "28-0316859752ff",  0.03},
   
   // Updated 2024-04-21
-  {"28-062015683130", -0.19 },
-  {"28-4d23d44382e6", -0.56 },
-  {"28-607e2a346461", -0.44 },
-  {"28-6c7e2a346461", -0.50 },
-  {"28-d1632a346461", -0.44 },
-  {"28-747ad5346461", -0.38 },
-  {"28-e576d5346461", -0.50 },
-  {"28-2ed9d4432c09", -0.81 },
-  {"28-062015408cb5", -0.37 },
+  { "28-062015683130", -0.19 },
+  { "28-4d23d44382e6", -0.56 },
+  { "28-607e2a346461", -0.44 },
+  { "28-6c7e2a346461", -0.50 },
+  { "28-d1632a346461", -0.44 },
+  { "28-747ad5346461", -0.38 },
+  { "28-e576d5346461", -0.50 },
+  { "28-2ed9d4432c09", -0.81 },
+  { "28-062015408cb5", -0.37 },
 };
 
 /**
@@ -117,7 +119,7 @@ ST_CALIBRATION calibration[] = {
 char *convertAddress(char *str, DeviceAddress addr)
 {
   // Linux kernel format for 1-wire adresses
-  snprintf(str, ONEWIRE_ADDR_LEN, "%02x-%02x%02x%02x%02x%02x%02x", addr[0], addr[6], addr[5],addr[4], addr[3], addr[2], addr[1]);
+  snprintf_P(str, ONEWIRE_ADDR_LEN, PSTR("%02x-%02x%02x%02x%02x%02x%02x"), addr[0], addr[6], addr[5],addr[4], addr[3], addr[2], addr[1]);
   return str;
 }
 
@@ -126,7 +128,7 @@ char *getDeviceAddress(char *str,  uint8_t index)
   DeviceAddress addr;
   if(sensors.getAddress(addr, index))
   {
-    snprintf(str, ONEWIRE_ADDR_LEN, "%02x-%02x%02x%02x%02x%02x%02x", addr[0], addr[6], addr[5],addr[4], addr[3], addr[2], addr[1]);
+    snprintf_P(str, ONEWIRE_ADDR_LEN, PSTR("%02x-%02x%02x%02x%02x%02x%02x"), addr[0], addr[6], addr[5],addr[4], addr[3], addr[2], addr[1]);
   }
   else
   {
@@ -159,8 +161,8 @@ double get_temp()
 {
   double temp;
   char addr[ONEWIRE_ADDR_LEN];
-  int max_try=10;
-  int index=0;
+  uint8_t max_try=10;
+  uint8_t index=0;
   
   do
   {
@@ -187,7 +189,7 @@ double get_temp()
      }
      else
      {
-       json_error("Can't get sensor address for calibration.");
+       json_error(F("Can't get sensor address for calibration."));
      }
   }
 
@@ -199,12 +201,18 @@ double get_temp()
  * Serial JSON API handlers
  ********************************************************************************/
 
-void json_error(String msg)
+// Require F("message") as first parameter
+void json_error(const __FlashStringHelper *fmt, ...)
 {
-  json_output.clear();
-  json_output["error"] = msg;
-  serializeJson(json_output, Serial);
-  Serial.println();
+  va_list ap;
+  va_start(ap, fmt);
+
+  vsnprintf_P(buffer, BUF_SIZE, (const char*)fmt, ap);
+  Serial.print(F("{\"error\": \""));
+  Serial.print(buffer);
+  Serial.println(F("\"}"));
+
+  va_end(ap);
 }
 
 void print_help()
@@ -222,27 +230,23 @@ void print_help()
 
 void print_json_config()
 {
-  json_output.clear();
-  JsonObject config = json_output.createNestedObject("config");
-  config["frequency"] = frequency_ms;
-  config["debug"] = debug;
-  serializeJson(json_output, Serial);
-  Serial.println();
+  snprintf_P(buffer, BUF_SIZE, PSTR("{\"config\": {\"frequency\": %lu, \"debug\": %s }}"), frequency_ms, debug ? "true": "false");
+  Serial.println(buffer);
 }
 
-bool save_json_config(JsonObject json)
+bool save_json_config(JsonObject config)
 {
   // Save debug
-  if(json.containsKey("debug"))
+  if(config.containsKey(F("debug")))
   {
-    debug = json["debug"];
-    DBG("Saved debug=%s", debug ? "true": "false");
+    debug = config[F("debug")];
+    DBG(PSTR("Saved debug=%s"), debug ? "true": "false");
   }
 
-  if(json.containsKey("frequency"))
+  if(config.containsKey(F("frequency")))
   {
     // Save frequency
-    const int freq = json["frequency"];
+    const int freq = config[F("frequency")];
 
     if(freq <= 0)
     {
@@ -252,7 +256,7 @@ bool save_json_config(JsonObject json)
     else
     {
       frequency_ms = freq;
-      DBG("Saved frequency=%i", frequency_ms);
+      DBG(PSTR("Saved frequency=%i"), frequency_ms);
     }
   }
 
@@ -264,35 +268,35 @@ void handle_serial_api()
 {
   if(Serial.available())
   {
-    String input = Serial.readString();
-    input.trim();
-    
-    if(input=="help")
+    uint8_t size = Serial.readBytesUntil('\n', buffer, BUF_SIZE);
+    buffer[size] = '\0'; // Terminate input string
+
+    if(strcmp_P(buffer, PSTR("help")) == 0)
     {
       print_help();
       return;
     }
     
     // Deserialize the JSON document
-    DeserializationError error = deserializeJson(json_input, input);
+    DeserializationError error = deserializeJson(json_input, buffer);
 
      // Test if parsing succeeds.
     if(error)
     {
-      json_error("deserializeJson() failed: " + String(error.f_str()));
+      json_error(F("deserializeJson() failed: %s"), error.c_str());
       return;
     }
 
     // Manage configuration
-    if(json_input.containsKey("config"))
+    if(json_input.containsKey(F("config")))
     {
-      if(json_input["config"].isNull() || json_input["config"].size() == 0)
+      if(json_input[F("config")].isNull() || json_input[F("config")].size() == 0)
       {
         print_json_config();
       }
       else
       {
-        if(save_json_config(json_input["config"]))
+        if(save_json_config(json_input[F("config")]))
         {
           print_json_config();
         }
@@ -302,27 +306,27 @@ void handle_serial_api()
 
     // Manage relays
 #ifdef HAS_NB_RELAYS
-    for(int i=0; i < HAS_NB_RELAYS; i++)
+    for(uint8_t i=0; i < HAS_NB_RELAYS; i++)
     {
-      snprintf(buffer, BUF_SIZE, "relay%d", i);
-      if(json_input.containsKey(buffer))
+      if(json_input.containsKey(relays_label[i]))
       {
-        String action = json_input[buffer];
-        if(action == "on")
+        const char* action = json_input[relays_label[i]];
+
+        if(strcmp_P(action, PSTR("on")) == 0)
         {
           switch_on_relay(i, true);
         }
-        else if(action == "off")
+        else if(strcmp_P(action, PSTR("off")) == 0)
         {
           switch_on_relay(i, false);
         }
-        else if(action == "toggle")
+        else if(strcmp_P(action, PSTR("toggle")) == 0)
         {
           switch_on_relay(i, !relays_active[i]);
         }
         else
         {
-          json_error("Unknown action:" + action);
+          json_error(F("Unknown action: %s"), action);
         }
       }
     }
@@ -330,10 +334,12 @@ void handle_serial_api()
   }
 }
 
-void switch_on_relay(int id, bool on)
+void switch_on_relay(uint8_t id, bool on)
 {
   digitalWrite(relays_gpio[id], on ? HIGH : LOW);
   relays_active[id]=on;
+  DBG(PSTR("Event on %s : %s"), relays_label[id], on ? "true": "false");
+  send_sensors_json_data();
 }
 
 /**
@@ -384,12 +390,12 @@ unsigned int get_distance(SoftwareSerial serial)
       l_data = buf[1];
       sum = buf[2];
 
-      DBG("h_data=%x l_data=%x sum=%x", h_data, l_data, sum);
+      DBG(PSTR("h_data=%x l_data=%x sum=%x"), h_data, l_data, sum);
 
       if(((h_data + l_data)-1) != sum)
       {
-        DBG("Wrong checksum");
-         return 0;
+        DBG(PSTR("Wrong checksum"));
+        return 0;
       }
 
       distance = (h_data<<8) + l_data;
@@ -398,7 +404,7 @@ unsigned int get_distance(SoftwareSerial serial)
   }
   else
   {
-    DBG("Serial port not available");
+    DBG(PSTR("Serial port not available"));
     return 0;
   }
 }
@@ -419,7 +425,7 @@ void setup()
 
   // Relays output
 #ifdef HAS_NB_RELAYS
-  for(int i=0; i < HAS_NB_RELAYS; i++)
+  for(uint8_t i=0; i < HAS_NB_RELAYS; i++)
   {
     pinMode(relays_gpio[i], OUTPUT);
     digitalWrite(relays_gpio[i], LOW);
@@ -442,40 +448,44 @@ void loop()
   if(now_ms - lastrun_ms > frequency_ms)
   {
     send_sensors_json_data();
+
+    //Serial.print("freeMemory()=");
+    //Serial.println(freeMemory());
     
     // update the timing variable
     lastrun_ms = now_ms;
   }  
 }
 
-
 void send_sensors_json_data()
 {
-  json_output.clear();
-  JsonObject data = json_output.createNestedObject("data");
+  unsigned int len = 0;
+
+  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR("{\"data\":{"));
   
 #ifdef HAS_FLOW_SENSOR
-  data["flow"] = get_flow_counter();
+  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"flow\": %lu,"), get_flow_counter());
 #endif
 #ifdef HAS_DS18B20
-  data["temp"] = get_temp();
+  double temp = get_temp();
+  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"temp\": %i.%i,"), (int)temp, (int)(temp * 100) % 100); // AVR do not support float in printf
 #endif
 #ifdef HAS_SENSOR_A
-  data["A"] = get_distance(serial_A);
+  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"A\": %u,"), get_distance(serial_A));
 #endif
 #ifdef HAS_SENSOR_A
-  data["B"] = get_distance(serial_B);
+  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"B\": %u,"), get_distance(serial_B));
 #endif
 #ifdef HAS_NB_RELAYS
-  for(int i=0; i < HAS_NB_RELAYS; i++)
+  for(uint8_t i=0; i < HAS_NB_RELAYS; i++)
   {
-    snprintf(buffer, BUF_SIZE, "relay%d", i);
-    data[buffer] = relays_active[i];
+    len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"%s\": %s,"), relays_label[i], relays_active[i] ? "true": "false");
   }
 #endif
-  
-  serializeJson(json_output, Serial);
-  Serial.println();
+
+  len--; // Remove last comma
+  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR("}}"));
+  Serial.println(buffer);
 }
 
 // EOF
