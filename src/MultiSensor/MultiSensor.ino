@@ -19,19 +19,25 @@
  * ***********************************************************************/
 
 // Supported sensors:
-// - Distance AJ-SR04M See https://tutorials.probots.co.in/communicating-with-a-waterproof-ultrasonic-sensor-aj-sr04m-jsn-sr04t/
-// - Temperature DS18B20
-// - Flow YF-B5
+// - 2x Distance AJ-SR04M See https://tutorials.probots.co.in/communicating-with-a-waterproof-ultrasonic-sensor-aj-sr04m-jsn-sr04t/
+// - 1x Temperature DS18B20
+// - 1x Flow YF-B5
 //
 // Supported outputs:
 // - JSON Serial API
-// - Standard relays
+// - 4x standard relays
 
 // This code has beed desiged to run on Arduino Uno/Nano with limited RAM,
 // hence the RAM usage optimisation avoiding Strings as both DallasTemperature
 // and AduinoJson uses a lot of RAM.
 //
 // Use board "Atmel atmega328p" to compile for compatible boards
+
+// MAX485 Setup:
+//   - TX -> DI
+//   - RX -> RO
+//   - GPIO_PTT -> RE and DE
+// See https://www.circuitstate.com/tutorials/what-is-rs-485-how-to-use-max485-with-arduino-for-reliable-long-distance-serial-communication/
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -42,11 +48,12 @@
 //#include "MemoryFree.h"
 
 // Feature configuration (coment out unneeded features)
-#define HAS_FLOW_SENSOR   // Water flow sensro YF-B5 (5v)
-#define HAS_DS18B20       // Temperature
+#define HAS_FLOW_SENSOR   // Water flow sensor YF-B5 (5v)
+#define HAS_DS18B20       // Temperature Dallas sensor
 #define HAS_NB_RELAYS 4   // Number of relays (1-4), comment out to disable relays
 #define HAS_SENSOR_A      // AJ-SR04M
 #define HAS_SENSOR_B      // AJ-SR04M
+#define HAS_MAX485        // Use MAX485 on hardware serial
 
 // GPIO configuration
 #define GPIO_ONEWIRE 12     // OneWire pin bus
@@ -55,17 +62,18 @@
 #define GPIO_SENSOR_A_TX 4
 #define GPIO_SENSOR_B_RX 7
 #define GPIO_SENSOR_B_TX 8
-#define GPIO_RELAY0 13      // Relays GPIO
+#define GPIO_RELAY0 6      // Relays GPIO
 #define GPIO_RELAY1 11
 #define GPIO_RELAY2 10
 #define GPIO_RELAY3 9
-#define DEFAULT_FREQUENCY_MS 30000 // Frequency of the execution in ms
+#define GPIO_PTT 13        // Connect to RE and DE on MAX485
+#define DEFAULT_FREQUENCY_MS 60000 // Frequency of the execution in ms
 
 #define ONEWIRE_ADDR_LEN 16        // 6 bytes + 3 chars header + EOS = 16 chars
 #define BUF_SIZE 256               // Used for string buffers
 
 // Debug macro
-#define DBG(...) if(debug) { snprintf_P(buffer, BUF_SIZE, __VA_ARGS__); Serial.println(buffer); }
+#define DBG(...) if(debug) { snprintf_P(buffer, BUF_SIZE, __VA_ARGS__); println(buffer); }
 
 unsigned long lastrun_ms = 0;
 unsigned long frequency_ms = DEFAULT_FREQUENCY_MS;
@@ -213,15 +221,19 @@ void json_error(const __FlashStringHelper *fmt, ...)
   va_start(ap, fmt);
 
   vsnprintf_P(buffer, BUF_SIZE, (const char*)fmt, ap);
+
+  ptt_push();
   Serial.print(F("{\"error\": \""));
   Serial.print(buffer);
   Serial.println(F("\"}"));
+  ptt_release();
 
   va_end(ap);
 }
 
 void print_help()
 {
+  ptt_push();
   Serial.println(F(R"(
     MultiSensor v1.0 JSON API
     {"config": {}} : Get config
@@ -231,12 +243,13 @@ void print_help()
     {"relayX": "off"} : Switch X off
     {"relayX": "toggle"} : Toggle switch X
   )"));
+  ptt_release();
 }
 
 void print_json_config()
 {
   snprintf_P(buffer, BUF_SIZE, PSTR("{\"config\": {\"frequency\": %lu, \"debug\": %s }}"), frequency_ms, debug ? "true": "false");
-  Serial.println(buffer);
+  println(buffer);
 }
 
 bool save_json_config(JsonObject config)
@@ -414,9 +427,37 @@ unsigned int get_distance(SoftwareSerial serial)
   }
 }
 
+/**
+ * MAX485 helpers
+ ********************************************************************************/
+
+void println(const char * msg)
+{
+  ptt_push();
+  Serial.println(msg);
+  ptt_release();
+}
+
+void ptt_push()
+{
+#ifdef HAS_MAX485
+  digitalWrite(GPIO_PTT, HIGH);
+  delay(10);
+#endif
+}
+
+void ptt_release()
+{
+#ifdef HAS_MAX485
+  Serial.flush();
+  delay(10);
+  digitalWrite(GPIO_PTT, LOW);
+#endif
+}
+
 void setup()
 {
-  Serial.begin(9600);
+  Serial.begin(9600);  // Default 8N1
   
 #ifdef HAS_SENSOR_A
   serial_A.begin(9600);
@@ -426,6 +467,11 @@ void setup()
 #endif
 #ifdef HAS_DS18B20
   sensors.begin();
+#endif
+
+#ifdef HAS_MAX485
+    pinMode(GPIO_PTT, OUTPUT);
+    digitalWrite(GPIO_PTT, LOW); // Start as receiver
 #endif
 
   // Relays output
@@ -442,7 +488,9 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(GPIO_FLOW_SENSOR), pulse, RISING);
 #endif
 
+  ptt_push();
   Serial.println(F("MultiSensor v1.0 started."));
+  ptt_release();
 }
 
 void loop()
@@ -491,7 +539,7 @@ void send_sensors_json_data()
 
   len--; // Remove last comma
   len += snprintf_P(output+len, BUF_SIZE-len, PSTR("}}"));
-  Serial.println(output);
+  println(output);
 }
 
 // EOF
