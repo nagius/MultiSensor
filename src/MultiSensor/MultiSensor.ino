@@ -27,6 +27,10 @@
 // - JSON Serial API
 // - Standard relays
 
+// This code has beed desiged to run on Arduino Uno/Nano with limited RAM,
+// hence the RAM usage optimisation avoiding Strings as both DallasTemperature
+// and AduinoJson uses a lot of RAM.
+//
 // Use board "Atmel atmega328p" to compile for compatible boards
 
 #include <OneWire.h>
@@ -148,6 +152,7 @@ float calibrate(char *addr, float input)
   {
     if(strcmp(addr, calibration[i].addr) == 0)
     {
+      DBG(PSTR("Applied calibration %i.%i"), (int)calibration[i].offset, abs((int)(calibration[i].offset * 100) % 100));
       return input + calibration[i].offset;
     }
   }
@@ -162,7 +167,7 @@ double get_temp()
   double temp;
   char addr[ONEWIRE_ADDR_LEN];
   uint8_t max_try=10;
-  uint8_t index=0;
+  uint8_t index=0;  // Only read the first sensor
   
   do
   {
@@ -460,32 +465,33 @@ void loop()
 void send_sensors_json_data()
 {
   unsigned int len = 0;
+  char output[BUF_SIZE];
 
-  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR("{\"data\":{"));
+  len += snprintf_P(output, BUF_SIZE, PSTR("{\"data\":{"));
   
 #ifdef HAS_FLOW_SENSOR
-  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"flow\": %lu,"), get_flow_counter());
+  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"flow\": %lu,"), get_flow_counter());
 #endif
 #ifdef HAS_DS18B20
   double temp = get_temp();
-  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"temp\": %i.%i,"), (int)temp, (int)(temp * 100) % 100); // AVR do not support float in printf
+  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"temp\": %i.%i,"), (int)temp, abs((int)(temp * 100) % 100)); // AVR do not support float in printf
 #endif
 #ifdef HAS_SENSOR_A
-  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"A\": %u,"), get_distance(serial_A));
+  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"A\": %u,"), get_distance(serial_A));
 #endif
 #ifdef HAS_SENSOR_A
-  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"B\": %u,"), get_distance(serial_B));
+  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"B\": %u,"), get_distance(serial_B));
 #endif
 #ifdef HAS_NB_RELAYS
   for(uint8_t i=0; i < HAS_NB_RELAYS; i++)
   {
-    len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR(" \"%s\": %s,"), relays_label[i], relays_active[i] ? "true": "false");
+    len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"%s\": %s,"), relays_label[i], relays_active[i] ? "true": "false");
   }
 #endif
 
   len--; // Remove last comma
-  len += snprintf_P(buffer+len, BUF_SIZE-len, PSTR("}}"));
-  Serial.println(buffer);
+  len += snprintf_P(output+len, BUF_SIZE-len, PSTR("}}"));
+  Serial.println(output);
 }
 
 // EOF
