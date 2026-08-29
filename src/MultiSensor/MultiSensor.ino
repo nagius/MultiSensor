@@ -68,6 +68,8 @@
 #define GPIO_RELAY3 9
 #define GPIO_PTT 13        // Connect to RE and DE on MAX485
 #define DEFAULT_FREQUENCY_MS 60000 // Frequency of the execution in ms
+#define BROADCAST_ID 0xFF // Generic ID to address all devices
+#define DEFAULT_ID 0x01 // Unique ID for multi-device communication
 
 #define ONEWIRE_ADDR_LEN 16        // 6 bytes + 3 chars header + EOS = 16 chars
 #define BUF_SIZE 256               // Used for string buffers
@@ -77,6 +79,7 @@
 
 unsigned long lastrun_ms = 0;
 unsigned long frequency_ms = DEFAULT_FREQUENCY_MS;
+uint8_t id = DEFAULT_ID;
 bool debug = false;
 char buffer[BUF_SIZE];            // Global char* to avoir multiple String concatenation which causes RAM fragmentation
 
@@ -108,20 +111,22 @@ void print_help()
 {
   ptt_push();
   Serial.println(F(R"(
-    MultiSensor v1.1 JSON API
-    {"config": {}} : Get config
-    {"config": {"frequency": 2000}} : Set frequency in s (0 to disable broadcast)
-    {"config": {"debug": true}} : Enable debug mode
-    {"relayX": "on"} : Switch X on
-    {"relayX": "off"} : Switch X off
-    {"relayX": "toggle"} : Toggle switch X
+MultiSensor v2.0 JSON API:
+ {"id": X, "config": {}} : Request config
+ {"id": X, "data": {}} : Request data
+ {"id": X, "config": {"frequency": 2000}} : Set frequency in s (0 to disable broadcast)
+ {"id": X, "config": {"debug": true}} : Enable debug mode
+ {"id": X, "config": {"id": 2}} : Change ID number
+ {"id": X, "relayN": "on"} : Switch X on
+ {"id": X, "relayN": "off"} : Switch X off
+ {"id": X, "relayN": "toggle"} : Toggle switch X
   )"));
   ptt_release();
 }
 
-void print_json_config()
+void send_json_config()
 {
-  snprintf_P(buffer, BUF_SIZE, PSTR("{\"config\": {\"frequency\": %lu, \"debug\": %s }}"), frequency_ms, debug ? "true": "false");
+  snprintf_P(buffer, BUF_SIZE, PSTR("{\"id\": %u, \"config\": {\"frequency\": %lu, \"debug\": %s }}"), id, frequency_ms, debug ? "true": "false");
   println(buffer);
 }
 
@@ -148,6 +153,22 @@ bool save_json_config(JsonObject config)
     {
       frequency_ms = freq;
       DBG(PSTR("Saved frequency=%i"), frequency_ms);
+    }
+  }
+
+  if(config.containsKey(F("id")))
+  {
+    const int new_id = config[F("id")];
+
+    if(new_id < 0 || new_id >= 255) // 0xFF is broadcast value
+    {
+      json_error(F("Invalid ID parameter: need to be positive short integer"));
+      return false;
+    }
+    else
+    {
+      id = new_id;
+      DBG(PSTR("Saved ID=%i"), id);
     }
   }
 
@@ -179,19 +200,45 @@ void handle_serial_api()
       return;
     }
 
+    // Manage identification
+    if(json_input.containsKey(F("id")))
+    {
+      const int received_id = json_input[F("id")];
+      if(received_id != id && received_id != BROADCAST_ID)
+      {
+        // Message not for us
+        return;
+      }
+    }
+    else
+    {
+      // Invalid message
+      return;
+    }
+
     // Manage configuration
     if(json_input.containsKey(F("config")))
     {
       if(json_input[F("config")].isNull() || json_input[F("config")].size() == 0)
       {
-        print_json_config();
+        send_json_config();
       }
       else
       {
         if(save_json_config(json_input[F("config")]))
         {
-          print_json_config();
+          send_json_config();
         }
+      }
+      return;
+    }
+
+    // Manage data
+    if(json_input.containsKey(F("data")))
+    {
+      if(json_input[F("data")].isNull() || json_input[F("data")].size() == 0)
+      {
+        send_sensors_json_data();
       }
       return;
     }
@@ -255,8 +302,11 @@ void setup()
 #endif
 
   ptt_push();
-  Serial.println(F("MultiSensor v1.1 started."));
+  Serial.println(F("MultiSensor v2.0 started."));
   ptt_release();
+
+  // Broadcast config at boot
+  send_json_config();
   
   // Initial broadcast
   if(frequency_ms>0)
@@ -288,7 +338,7 @@ void send_sensors_json_data()
   unsigned int len = 0;
   char output[BUF_SIZE];
 
-  len += snprintf_P(output, BUF_SIZE, PSTR("{\"data\":{"));
+  len += snprintf_P(output, BUF_SIZE, PSTR("{\"id\": %u, \"data\":{"), id);
   
 #ifdef HAS_FLOW_SENSOR
   len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"flow\": %lu,"), get_flow_counter());
