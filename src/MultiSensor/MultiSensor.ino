@@ -114,7 +114,7 @@ void print_help()
 MultiSensor v2.0 JSON API:
  {"id": X, "config": {}} : Request config
  {"id": X, "data": {}} : Request data
- {"id": X, "config": {"frequency": 2000}} : Set frequency in s (0 to disable broadcast)
+ {"id": X, "config": {"freq_ms": 2000}} : Set frequency in ms (0 to disable broadcast)
  {"id": X, "config": {"debug": true}} : Enable debug mode
  {"id": X, "config": {"id": 2}} : Change ID number
  {"id": X, "relayN": "on"} : Switch X on
@@ -126,7 +126,7 @@ MultiSensor v2.0 JSON API:
 
 void send_json_config()
 {
-  snprintf_P(buffer, BUF_SIZE, PSTR("{\"id\": %u, \"config\": {\"frequency\": %lu, \"debug\": %s }}"), id, frequency_ms, debug ? "true": "false");
+  snprintf_P(buffer, BUF_SIZE, PSTR("{\"id\": %u, \"config\": {\"freq_ms\": %lu, \"debug\": %s }}"), id, frequency_ms, debug ? "true": "false");
   println(buffer);
 }
 
@@ -139,20 +139,20 @@ bool save_json_config(JsonObject config)
     DBG(PSTR("Saved debug=%s"), debug ? "true": "false");
   }
 
-  if(config.containsKey(F("frequency")))
+  if(config.containsKey(F("freq_ms")))
   {
     // Save frequency
-    const int freq = config[F("frequency")];
+    const int freq = config[F("freq_ms")];
 
     if(freq < 0)
     {
-      json_error(F("Invalid frequency parameter: need to be positive integer or zero"));
+      json_error(F("Invalid freq_ms parameter: need to be positive integer or zero"));
       return false;
     }
     else
     {
       frequency_ms = freq;
-      DBG(PSTR("Saved frequency=%i"), frequency_ms);
+      DBG(PSTR("Saved freq_ms=%i"), frequency_ms);
     }
   }
 
