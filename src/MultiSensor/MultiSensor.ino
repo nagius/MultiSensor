@@ -77,137 +77,10 @@
 
 unsigned long lastrun_ms = 0;
 unsigned long frequency_ms = DEFAULT_FREQUENCY_MS;
-bool relays_active[] = {false, false, false, false};
-uint8_t relays_gpio[] = { GPIO_RELAY0, GPIO_RELAY1, GPIO_RELAY2, GPIO_RELAY3 };
-char* relays_label[] = { "relay0", "relay1", "relay2", "relay3" };
 bool debug = false;
-volatile unsigned long pulse_count = 0;  // Counter for flow sensor interruptions
-SoftwareSerial serial_A(GPIO_SENSOR_A_RX, GPIO_SENSOR_A_TX);  // Serial interface to ultrasonic sensor AJ-SR04M
-SoftwareSerial serial_B(GPIO_SENSOR_B_RX, GPIO_SENSOR_B_TX);
-OneWire oneWire(GPIO_ONEWIRE);
-DallasTemperature sensors(&oneWire);
 char buffer[BUF_SIZE];            // Global char* to avoir multiple String concatenation which causes RAM fragmentation
 
 StaticJsonDocument<200> json_input;
-
-struct ST_CALIBRATION {
-  char addr[ONEWIRE_ADDR_LEN];
-  float offset;
-};
-
-// Builtin calibration data for known devices 
-ST_CALIBRATION calibration[] = {
-  // 2022-04-30
-  { "26-00000238aec7", -1.15},
-  { "28-0416549140ff",  0.01},
-  { "28-0316442b74ff", -1.43},
-  { "28-04168438ddff", -0.05},
-  { "28-00044c9e09ff", -0.30},
-  { "28-000003dd2964", -0.35},
-  { "28-00000ab5377d", -1.05},
-  { "28-00000ab525b3", -2.88},
-  { "28-0620153d35c4", -0.79},  // Unstable
-  { "28-062015a347a4", -0.28},
-  { "28-0620153cd4ea", -0.79},  // Unstable
-  { "28-00044d4226ff", -1.23},
-  { "28-0316859752ff",  0.03},
-  
-  // Updated 2024-04-21
-  { "28-062015683130", -0.19 },
-  { "28-4d23d44382e6", -0.56 },
-  { "28-607e2a346461", -0.44 },
-  { "28-6c7e2a346461", -0.50 },
-  { "28-d1632a346461", -0.44 },
-  { "28-747ad5346461", -0.38 },
-  { "28-e576d5346461", -0.50 },
-  { "28-2ed9d4432c09", -0.81 },
-  { "28-062015408cb5", -0.37 },
-};
-
-/**
- * One wire hepers
- ********************************************************************************/
-
-char *convertAddress(char *str, DeviceAddress addr)
-{
-  // Linux kernel format for 1-wire adresses
-  snprintf_P(str, ONEWIRE_ADDR_LEN, PSTR("%02x-%02x%02x%02x%02x%02x%02x"), addr[0], addr[6], addr[5],addr[4], addr[3], addr[2], addr[1]);
-  return str;
-}
-
-char *getDeviceAddress(char *str,  uint8_t index)
-{
-  DeviceAddress addr;
-  if(sensors.getAddress(addr, index))
-  {
-    snprintf_P(str, ONEWIRE_ADDR_LEN, PSTR("%02x-%02x%02x%02x%02x%02x%02x"), addr[0], addr[6], addr[5],addr[4], addr[3], addr[2], addr[1]);
-  }
-  else
-  {
-    json_error(F("Onewire address not found"));
-    str[0]='\0';
-  }
-  return str;
-}
-
-float calibrate(char *addr, float input)
-{
-  // Forward no-data
-  if (input == DEVICE_DISCONNECTED_C)
-    return DEVICE_DISCONNECTED_C;
-
-  for(uint8_t i=0; i <= (sizeof(calibration) / sizeof(ST_CALIBRATION)); i++)
-  {
-    if(strcmp(addr, calibration[i].addr) == 0)
-    {
-      DBG(PSTR("Applied calibration %i.%i"), (int)calibration[i].offset, abs((int)(calibration[i].offset * 100) % 100));
-      return input + calibration[i].offset;
-    }
-  }
-
-  // No calibration data found
-  return input;
-}
-
-
-double get_temp()
-{
-  double temp;
-  char addr[ONEWIRE_ADDR_LEN];
-  uint8_t max_try=10;
-  uint8_t index=0;  // Only read the first sensor
-  
-  do
-  {
-    sensors.requestTemperaturesByIndex(index); 
-    delay(10); 
-    temp = sensors.getTempCByIndex(index);
-    
-    max_try--;
-  }
-  while ((temp == 85.0 || temp == (-127.0)) && max_try > 0);
-
-  if (max_try <= 0)
-  {
-    temp = -127;
-  }
-  else
-  {
-     // Builtin calibration for known sensors
-     getDeviceAddress(addr, index);
-     
-     if(strlen(addr)>0)
-     {
-       temp = calibrate(addr, temp);    
-     }
-     else
-     {
-       json_error(F("Can't get sensor address for calibration."));
-     }
-  }
-
-  return temp;
-}
 
 
 /**
@@ -327,21 +200,21 @@ void handle_serial_api()
 #ifdef HAS_NB_RELAYS
     for(uint8_t i=0; i < HAS_NB_RELAYS; i++)
     {
-      if(json_input.containsKey(relays_label[i]))
+      if(json_input.containsKey(get_relay_label(i)))
       {
-        const char* action = json_input[relays_label[i]];
+        const char* action = json_input[get_relay_label(i)];
 
         if(strcmp_P(action, PSTR("on")) == 0)
         {
-          switch_on_relay(i, true);
+          switch_relay(i, true);
         }
         else if(strcmp_P(action, PSTR("off")) == 0)
         {
-          switch_on_relay(i, false);
+          switch_relay(i, false);
         }
         else if(strcmp_P(action, PSTR("toggle")) == 0)
         {
-          switch_on_relay(i, !relays_active[i]);
+          switch_relay(i, !is_relay_active(i));
         }
         else
         {
@@ -353,155 +226,32 @@ void handle_serial_api()
   }
 }
 
-void switch_on_relay(uint8_t id, bool on)
-{
-  digitalWrite(relays_gpio[id], on ? HIGH : LOW);
-  relays_active[id]=on;
-  DBG(PSTR("Event on %s : %s"), relays_label[id], on ? "true": "false");
-  send_sensors_json_data();
-}
-
-/**
- * Flow sensor helpers
- ********************************************************************************/
-
-unsigned long get_flow_counter()
-{
-  unsigned long count = 0;  
-
-  // Need atomic as a lock to access volatile variable
-  // https://www.arduino.cc/reference/en/language/variables/variable-scope-qualifiers/volatile/
-  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-    count = pulse_count;
-  }
-  
-  return count;
-}
-
-
-void pulse()
-{
-  pulse_count++;
-}
-
-
-/**
- * Ultrasonic sensor helpers
- ********************************************************************************/
- 
-unsigned int get_distance(SoftwareSerial& serial)
-{
-  unsigned int distance;
-  byte start_byte, h_data, l_data, sum = 0;
-  byte buf[3];
-
-  // Cleanup buffer
-  serial.listen();
-  while(serial.available())
-  {
-    serial.read();
-  }
-
-  // Trigger measurement
-  serial.write(0x01);
-  delay(150);
-  if(!serial.available())
-  {
-    DBG(PSTR("Serial port not available"));
-    return 0;
-  }
-
-  while(serial.available())
-  {
-    start_byte = (byte)serial.read();
-    if(start_byte == 255)
-    {
-      if(serial.readBytes(buf, 3) != 3)
-      {
-        DBG(PSTR("Wrong message length"));
-        return 0;
-      }
-
-      h_data = buf[0];
-      l_data = buf[1];
-      sum = buf[2];
-
-      DBG(PSTR("h_data=%x l_data=%x sum=%x"), h_data, l_data, sum);
-
-      if(((0xFF + h_data + l_data) & 0xFF) != sum)
-      {
-        DBG(PSTR("Wrong checksum"));
-        return 0;
-      }
-
-      distance = (h_data<<8) + l_data;
-      return distance;
-    }
-  }
-
-  DBG(PSTR("Synchonization lost"));
-  return 0;
-}
-
-/**
- * MAX485 helpers
- ********************************************************************************/
-
-void println(const char * msg)
-{
-  ptt_push();
-  Serial.println(msg);
-  ptt_release();
-}
-
-void ptt_push()
-{
-#ifdef HAS_MAX485
-  digitalWrite(GPIO_PTT, HIGH);
-  delay(10);
-#endif
-}
-
-void ptt_release()
-{
-#ifdef HAS_MAX485
-  Serial.flush();
-  delay(10);
-  digitalWrite(GPIO_PTT, LOW);
-#endif
-}
-
 void setup()
 {
   Serial.begin(9600);  // Default 8N1
   
 #ifdef HAS_SENSOR_A
-  serial_A.begin(9600);
+  setup_distance_A();
 #endif
+
 #ifdef HAS_SENSOR_B
-  serial_B.begin(9600);
+  setup_distance_B();
 #endif
+
 #ifdef HAS_DS18B20
-  sensors.begin();
+  setup_DS18B20();
 #endif
 
 #ifdef HAS_MAX485
-    pinMode(GPIO_PTT, OUTPUT);
-    digitalWrite(GPIO_PTT, LOW); // Start as receiver
+  setup_MAX485();
 #endif
 
-  // Relays output
 #ifdef HAS_NB_RELAYS
-  for(uint8_t i=0; i < HAS_NB_RELAYS; i++)
-  {
-    pinMode(relays_gpio[i], OUTPUT);
-    digitalWrite(relays_gpio[i], LOW);
-  }
+  setup_relays();
 #endif
 
-  // Flow Sensor
 #ifdef HAS_FLOW_SENSOR
-  attachInterrupt(digitalPinToInterrupt(GPIO_FLOW_SENSOR), pulse, RISING);
+  setup_flow_counter();
 #endif
 
   ptt_push();
@@ -541,15 +291,15 @@ void send_sensors_json_data()
   len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"temp\": %i.%i,"), (int)temp, abs((int)(temp * 100) % 100)); // AVR do not support float in printf
 #endif
 #ifdef HAS_SENSOR_A
-  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"A\": %u,"), get_distance(serial_A));
+  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"A\": %u,"), get_distance_A());
 #endif
 #ifdef HAS_SENSOR_A
-  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"B\": %u,"), get_distance(serial_B));
+  len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"B\": %u,"), get_distance_B());
 #endif
 #ifdef HAS_NB_RELAYS
   for(uint8_t i=0; i < HAS_NB_RELAYS; i++)
   {
-    len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"%s\": %s,"), relays_label[i], relays_active[i] ? "true": "false");
+    len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"%s\": %s,"), get_relay_label(i), is_relay_active(i) ? "true": "false");
   }
 #endif
 
