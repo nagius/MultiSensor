@@ -62,17 +62,18 @@
 #define GPIO_SENSOR_A_TX 4
 #define GPIO_SENSOR_B_RX 7
 #define GPIO_SENSOR_B_TX 8
-#define GPIO_RELAY0 6      // Relays GPIO
+#define GPIO_RELAY0 6       // Relays GPIO
 #define GPIO_RELAY1 11
 #define GPIO_RELAY2 10
 #define GPIO_RELAY3 9
-#define GPIO_PTT 13        // Connect to RE and DE on MAX485
-#define DEFAULT_FREQUENCY_MS 60000 // Frequency of the execution in ms
-#define BROADCAST_ID 0xFF // Generic ID to address all devices
-#define DEFAULT_ID 0x01 // Unique ID for multi-device communication
+#define GPIO_PTT 13                 // Connect to RE and DE on MAX485
+#define DEFAULT_FREQUENCY_MS 60000  // Frequency of the execution in ms
+#define BROADCAST_ID 0xFF           // Generic ID to address all devices
+#define DEFAULT_ID 0x01             // Unique ID for multi-device communication
+#define COLLISION_DELAY_MS 250      // Delay to avoid broadcast collision, must be bigger that message length at TX speed
 
-#define ONEWIRE_ADDR_LEN 16        // 6 bytes + 3 chars header + EOS = 16 chars
-#define BUF_SIZE 256               // Used for string buffers
+#define ONEWIRE_ADDR_LEN 16         // 6 bytes + 3 chars header + EOS = 16 chars
+#define BUF_SIZE 256                // Used for string buffers
 
 // Debug macro
 #define DBG(...) if(debug) { snprintf_P(buffer, BUF_SIZE, __VA_ARGS__); println(buffer); }
@@ -81,6 +82,7 @@ unsigned long lastrun_ms = 0;
 unsigned long frequency_ms = DEFAULT_FREQUENCY_MS;
 uint8_t id = DEFAULT_ID;
 bool debug = false;
+bool broadcasted_request = false; // Flag if incoming request is a broadcast
 char buffer[BUF_SIZE];            // Global char* to avoir multiple String concatenation which causes RAM fragmentation
 
 StaticJsonDocument<200> json_input;
@@ -124,8 +126,18 @@ MultiSensor v2.0 JSON API:
   ptt_release();
 }
 
+void avoid_collision()
+{
+  if(broadcasted_request)
+  {
+    // Unique delay per device to avoid collision
+    delay(id * COLLISION_DELAY_MS);
+  }
+}
+
 void send_json_config()
 {
+  avoid_collision();
   snprintf_P(buffer, BUF_SIZE, PSTR("{\"id\": %u, \"config\": {\"freq_ms\": %lu, \"debug\": %s }}"), id, frequency_ms, debug ? "true": "false");
   println(buffer);
 }
@@ -209,6 +221,8 @@ void handle_serial_api()
         // Message not for us
         return;
       }
+
+      broadcasted_request = (received_id == BROADCAST_ID);
     }
     else
     {
@@ -337,6 +351,8 @@ void send_sensors_json_data()
 {
   unsigned int len = 0;
   char output[BUF_SIZE];
+
+  avoid_collision();
 
   len += snprintf_P(output, BUF_SIZE, PSTR("{\"id\": %u, \"data\":{"), id);
   
