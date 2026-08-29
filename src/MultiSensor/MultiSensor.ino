@@ -110,7 +110,7 @@ void print_help()
   Serial.println(F(R"(
     MultiSensor v1.1 JSON API
     {"config": {}} : Get config
-    {"config": {"frequency": 2000}} : Set frequency in s
+    {"config": {"frequency": 2000}} : Set frequency in s (0 to disable broadcast)
     {"config": {"debug": true}} : Enable debug mode
     {"relayX": "on"} : Switch X on
     {"relayX": "off"} : Switch X off
@@ -139,9 +139,9 @@ bool save_json_config(JsonObject config)
     // Save frequency
     const int freq = config[F("frequency")];
 
-    if(freq <= 0)
+    if(freq < 0)
     {
-      json_error(F("Invalid frequency parameter: need to be positive integer"));
+      json_error(F("Invalid frequency parameter: need to be positive integer or zero"));
       return false;
     }
     else
@@ -257,22 +257,29 @@ void setup()
   ptt_push();
   Serial.println(F("MultiSensor v1.1 started."));
   ptt_release();
+  
+  // Initial broadcast
+  if(frequency_ms>0)
+    send_sensors_json_data();
 }
 
 void loop()
 {
   handle_serial_api();
   
-  unsigned long now_ms = millis();
-  if(now_ms - lastrun_ms > frequency_ms)
+  if(frequency_ms>0)
   {
-    send_sensors_json_data();
+    unsigned long now_ms = millis();
+    if(now_ms - lastrun_ms > frequency_ms)
+    {
+      send_sensors_json_data();
 
-    //Serial.print("freeMemory()=");
-    //Serial.println(freeMemory());
-    
-    // update the timing variable
-    lastrun_ms = now_ms;
+      //Serial.print("freeMemory()=");
+      //Serial.println(freeMemory());
+      
+      // update the timing variable
+      lastrun_ms = now_ms;
+    }
   }  
 }
 
