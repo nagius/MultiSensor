@@ -31,7 +31,7 @@
 // hence the RAM usage optimisation avoiding Strings as both DallasTemperature
 // and AduinoJson uses a lot of RAM.
 //
-// Use board "Atmel atmega328p" to compile for compatible boards
+// Use board "Atmel atmega328p (old bootloader)" to compile for compatible boards
 
 // MAX485 Setup:
 //   - TX -> DI
@@ -47,7 +47,7 @@
 
 //#include "MemoryFree.h"
 
-// Feature configuration (coment out unneeded features)
+// Feature configuration (comment out unneeded features)
 #define HAS_FLOW_SENSOR   // Water flow sensor YF-B5 (5v)
 #define HAS_DS18B20       // Temperature Dallas sensor
 #define HAS_NB_RELAYS 4   // Number of relays (1-4), comment out to disable relays
@@ -235,7 +235,7 @@ void print_help()
 {
   ptt_push();
   Serial.println(F(R"(
-    MultiSensor v1.0 JSON API
+    MultiSensor v1.1 JSON API
     {"config": {}} : Get config
     {"config": {"frequency": 2000}} : Set frequency in s
     {"config": {"debug": true}} : Enable debug mode
@@ -286,7 +286,7 @@ void handle_serial_api()
 {
   if(Serial.available())
   {
-    uint8_t size = Serial.readBytesUntil('\n', buffer, BUF_SIZE);
+    uint8_t size = Serial.readBytesUntil('\n', buffer, BUF_SIZE-1);
     buffer[size] = '\0'; // Terminate input string
 
     if(strcmp_P(buffer, PSTR("help")) == 0)
@@ -302,6 +302,7 @@ void handle_serial_api()
     if(error)
     {
       json_error(F("deserializeJson() failed: %s"), error.c_str());
+      print_help();
       return;
     }
 
@@ -388,29 +389,46 @@ void pulse()
  * Ultrasonic sensor helpers
  ********************************************************************************/
  
-unsigned int get_distance(SoftwareSerial serial)
+unsigned int get_distance(SoftwareSerial& serial)
 {
   unsigned int distance;
   byte start_byte, h_data, l_data, sum = 0;
   byte buf[3];
 
+  // Cleanup buffer
+  serial.listen();
+  while(serial.available())
+  {
+    serial.read();
+  }
+
   // Trigger measurement
   serial.write(0x01);
-  serial.listen();
-  delay(100);
-  if(serial.available())
+  delay(150);
+  if(!serial.available())
+  {
+    DBG(PSTR("Serial port not available"));
+    return 0;
+  }
+
+  while(serial.available())
   {
     start_byte = (byte)serial.read();
     if(start_byte == 255)
     {
-      serial.readBytes(buf, 3);
+      if(serial.readBytes(buf, 3) != 3)
+      {
+        DBG(PSTR("Wrong message length"));
+        return 0;
+      }
+
       h_data = buf[0];
       l_data = buf[1];
       sum = buf[2];
 
       DBG(PSTR("h_data=%x l_data=%x sum=%x"), h_data, l_data, sum);
 
-      if(((h_data + l_data)-1) != sum)
+      if(((0xFF + h_data + l_data) & 0xFF) != sum)
       {
         DBG(PSTR("Wrong checksum"));
         return 0;
@@ -420,11 +438,9 @@ unsigned int get_distance(SoftwareSerial serial)
       return distance;
     }
   }
-  else
-  {
-    DBG(PSTR("Serial port not available"));
-    return 0;
-  }
+
+  DBG(PSTR("Synchonization lost"));
+  return 0;
 }
 
 /**
@@ -489,7 +505,7 @@ void setup()
 #endif
 
   ptt_push();
-  Serial.println(F("MultiSensor v1.0 started."));
+  Serial.println(F("MultiSensor v1.1 started."));
   ptt_release();
 }
 
