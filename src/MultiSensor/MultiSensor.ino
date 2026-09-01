@@ -39,6 +39,7 @@
 //   - GPIO_PTT -> RE and DE
 // See https://www.circuitstate.com/tutorials/what-is-rs-485-how-to-use-max485-with-arduino-for-reliable-long-distance-serial-communication/
 
+#include <EEPROM.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <SoftwareSerial.h>
@@ -67,20 +68,21 @@
 #define GPIO_RELAY2 10
 #define GPIO_RELAY3 9
 #define GPIO_PTT 13                 // Connect to RE and DE on MAX485
-#define DEFAULT_FREQUENCY_MS 60000  // Frequency of the execution in ms
-#define BROADCAST_ID 0xFF           // Generic ID to address all devices
-#define DEFAULT_ID 0x01             // Unique ID for multi-device communication
-#define COLLISION_DELAY_MS 250      // Delay to avoid broadcast collision, must be bigger that message length at TX speed
 
+// Default settings
+#define DEFAULT_FREQUENCY_MS 60000  // Frequency of the execution in ms
+#define DEFAULT_ID 0x01             // Unique ID for multi-device communication
+
+// Internal constants
+#define COLLISION_DELAY_MS 250      // Delay to avoid broadcast collision, must be bigger that message length at TX speed
+#define BROADCAST_ID 0xFF           // Generic ID to address all devices
 #define ONEWIRE_ADDR_LEN 16         // 6 bytes + 3 chars header + EOS = 16 chars
 #define BUF_SIZE 256                // Used for string buffers
 
 // Debug macro
 #define DBG(...) if(debug) { snprintf_P(buffer, BUF_SIZE, __VA_ARGS__); println(buffer); }
 
-unsigned long lastrun_ms = 0;
-unsigned long frequency_ms = DEFAULT_FREQUENCY_MS;
-uint8_t id = DEFAULT_ID;
+uint32_t lastrun_ms = 0;
 bool debug = false;
 bool broadcasted_request = false; // Flag if incoming request is a broadcast
 char buffer[BUF_SIZE];            // Global char* to avoir multiple String concatenation which causes RAM fragmentation
@@ -131,14 +133,14 @@ void avoid_collision()
   if(broadcasted_request)
   {
     // Unique delay per device to avoid collision
-    delay(id * COLLISION_DELAY_MS);
+    delay(get_id() * COLLISION_DELAY_MS);
   }
 }
 
 void send_json_config()
 {
   avoid_collision();
-  snprintf_P(buffer, BUF_SIZE, PSTR("{\"id\": %u, \"config\": {\"freq_ms\": %lu, \"debug\": %s }}"), id, frequency_ms, debug ? "true": "false");
+  snprintf_P(buffer, BUF_SIZE, PSTR("{\"id\": %u, \"config\": {\"freq_ms\": %lu, \"debug\": %s }}"), get_id(), get_freq_ms(), debug ? "true": "false");
   println(buffer);
 }
 
@@ -154,7 +156,7 @@ bool save_json_config(JsonObject config)
   if(config.containsKey(F("freq_ms")))
   {
     // Save frequency
-    const int freq = config[F("freq_ms")];
+    const long freq = config[F("freq_ms")];
 
     if(freq < 0)
     {
@@ -163,8 +165,8 @@ bool save_json_config(JsonObject config)
     }
     else
     {
-      frequency_ms = freq;
-      DBG(PSTR("Saved freq_ms=%i"), frequency_ms);
+      set_freq_ms(freq);
+      DBG(PSTR("Saved freq_ms=%i"), get_freq_ms());
     }
   }
 
@@ -179,8 +181,8 @@ bool save_json_config(JsonObject config)
     }
     else
     {
-      id = new_id;
-      DBG(PSTR("Saved ID=%i"), id);
+      set_id(new_id);
+      DBG(PSTR("Saved ID=%i"), get_id());
     }
   }
 
@@ -216,7 +218,7 @@ void handle_serial_api()
     if(json_input.containsKey(F("id")))
     {
       const int received_id = json_input[F("id")];
-      if(received_id != id && received_id != BROADCAST_ID)
+      if(received_id != get_id() && received_id != BROADCAST_ID)
       {
         // Message not for us
         return;
@@ -290,6 +292,7 @@ void handle_serial_api()
 void setup()
 {
   Serial.begin(9600);  // Default 8N1
+  setup_settings();
   
 #ifdef HAS_SENSOR_A
   setup_distance_A();
@@ -323,7 +326,7 @@ void setup()
   send_json_config();
   
   // Initial broadcast
-  if(frequency_ms>0)
+  if(get_freq_ms() > 0)
     send_sensors_json_data();
 }
 
@@ -331,10 +334,10 @@ void loop()
 {
   handle_serial_api();
   
-  if(frequency_ms>0)
+  if(get_freq_ms() > 0)
   {
-    unsigned long now_ms = millis();
-    if(now_ms - lastrun_ms > frequency_ms)
+    uint32_t now_ms = millis();
+    if(now_ms - lastrun_ms > get_freq_ms())
     {
       send_sensors_json_data();
 
@@ -354,7 +357,7 @@ void send_sensors_json_data()
 
   avoid_collision();
 
-  len += snprintf_P(output, BUF_SIZE, PSTR("{\"id\": %u, \"data\":{"), id);
+  len += snprintf_P(output, BUF_SIZE, PSTR("{\"id\": %u, \"data\":{"), get_id());
   
 #ifdef HAS_FLOW_SENSOR
   len += snprintf_P(output+len, BUF_SIZE-len, PSTR(" \"flow\": %lu,"), get_flow_counter());
