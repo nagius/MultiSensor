@@ -21,10 +21,23 @@ Data and control commands are send as JSON over standard RS232 Serial or RS485 w
 
 ## API
 
-Data is sent periodically over serial as followming (may vary depending the option activated):
+The API support both Pull and Push model. Multiple devices can be connected to the same RS485 bus and are identified by a unique ID. This ID must be present in each request.
+
+An ID with the broadcast value `255` will be accepted by all devices.
+
+### Data
+
+- To request the data on demand, send on one line :
+
+```json
+{"id": 1, "data": {}}
+```
+
+The device will respond over serial with the following message (may vary depending the option activated):
 
 ```json
 {
+  "id": 1,
   "data": {
     "flow": 1875,       # Counter of flow sensor pulses
     "temp": 23.5,       # Temperature (Celcius)
@@ -38,21 +51,9 @@ Data is sent periodically over serial as followming (may vary depending the opti
 }
 ```
 
-Configuration can be done by sending JSON payload over serial. To get the current configuration, send on one line:
+Push mode: if the frequency parameter (see configuration below) is >0, the data will be sent periodically. Beware of the risk of collision if multiple devices are on the same bus.
 
-```json
-{"config": {}}
-```
-
-To update it, send the same payload with modified values:
-
-```json
-{"config": {"frequency": 3000, "debug": false }}
-```
-
-Frequency (ms) represent how often the data will be collected and sent. Changes are not persistent on restart.
-
-To activate relays, send payload with the following form. Multiple relays can be specified at the same time:
+- To activate relays, send payload with the following form. Multiple relays can be specified at the same time:
 
 ```json
 {"relay0": "on", "relay2": "off"}
@@ -60,10 +61,45 @@ To activate relays, send payload with the following form. Multiple relays can be
 
 Possible values are `"on"`, `"off"` and `"toggle"`.
 
+### Config
+
+Configuration can be done by sending JSON payload over serial. The configuration is persisted upon power cycles.
+
+- To get the current configuration, send on one line:
+
+```json
+{"id": 1, "config": {}}
+```
+
+This configuration is also broadcasted at boot time.
+
+- To update it, send the same payload with modified values:
+
+```json
+{"id": 1, "config": {"freq_ms": 3000, "debug": false }}
+```
+
+`freq_ms` represent the frequency the data will be collected and sent in push mode. Set to 0 to disable.
+
+- To change the ID of the device:
+
+```json
+{"id": 1, "config": {"id": 3 }}
+```
+
+Subsequent requests will need to reference the new ID. Messages with the wrong ID will be ignored.
+
+- To changes the same parameters on all devices, use the broadcast ID:
+
+
+```json
+{"id": 255, "config": {"debug": false}}
+```
+
 ## Compilation and upload
 
 Compile this sketch with Arduino IDE and select board `Arduino Uno` or `Atmel atmega328p` for compatible boards.
 
 ## License
 
-Copyleft 2024 - Nicolas AGIUS - GNU GPLv3
+Copyleft 2024-2026 - Nicolas AGIUS - GNU GPLv3
